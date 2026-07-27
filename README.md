@@ -41,27 +41,61 @@ Includes **5,080 GitHub starred repositories** imported directly from the GitHub
 
 The bookmark data is user-collected content. The backup scripts and tooling are MIT.
 
-## CLI: `bm`
+## CLI Commands
 
-A companion CLI tool for managing bookmarks from the terminal.
+Standard shell commands for managing bookmarks — no dependencies beyond `gh` + `jq`.
 
-```text
-bm backup              Create a timestamped backup
-bm export csv|json     Export to CSV, JSON, markdown, or HTML
-bm import <file>       Import from a CSV or JSON file
-bm sync                Sync starred repos from GitHub
-bm status              Show bookmark count and folder sizes
-bm diff                Show changes since the last backup
-bm restore <backup>    Restore from a specific backup
-bm list <folder>       List bookmarks in a folder
+### Backup
+
+```bash
+cp "$HOME/Library/Application Support/Google/Chrome/Default/AccountBookmarks" backups/bookmarks_$(date +%Y%m%d_%H%M%S).json
 ```
 
-Install:
+### Restore
 
-```text
-# Symlink to PATH
-ln -sf $(pwd)/bm /usr/local/bin/bm
+```bash
+cp backups/bookmarks_20260727_093540.json ~/Library/Application\ Support/Google/Chrome/Default/AccountBookmarks
+```
 
-# Or use directly
-./bm status
+### Export to CSV
+
+```bash
+jq -r '.roots.bookmark_bar.children[] | select(.type == "folder") | .name as $f | .children[]? | select(.type == "url") | [$f, .name, .url] | @csv' AccountBookmarks > bookmarks.csv
+```
+
+### Export to Markdown tree
+
+```bash
+jq -r '.roots.bookmark_bar' AccountBookmarks | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+def w(n,i=0):
+    for c in n.get('children',[]):
+        if c['type']=='folder':
+            print('  '*i + '📁 ' + c['name'] + f' ({len(c.get(\"children\",[]))})')
+            w(c,i+1)
+w(d)
+"
+```
+
+### Sync GitHub starred repos
+
+```bash
+# One-shot: fetch all starred repos and inject into GitHub folder
+curl -s "https://api.github.com/users/gandli/starred?per_page=100&page=1" | \
+  jq -r '.[] | "\(.html_url)\t\(.full_name)"' | \
+  python3 -c "
+import json, sys
+with open('AccountBookmarks') as f: d = json.load(f)
+gh = next(c for c in d['roots']['bookmark_bar']['children'] if c['name']=='GitHub' and c['type']=='folder')
+exist = {c['url'] for c in gh['children'] if c.get('url')}
+for line in sys.stdin:
+    url, name = line.strip().split('\t')
+    if url not in exist:
+        gh['children'].append({'name':name,'type':'url','url':url})
+        exist.add(url)
+d['checksum']=hashlib.md5(json.dumps(d,indent=3).encode()).hexdigest()
+json.dump(d, open('AccountBookmarks','w'), indent=3, ensure_ascii=False)
+print(f'GitHub folder: {len(gh[\"children\"])} repos')
+"
 ```
