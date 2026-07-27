@@ -40,3 +40,28 @@ Includes **5,080 GitHub starred repositories** imported directly from the GitHub
 ## License
 
 The bookmark data is user-collected content. The backup scripts and tooling are MIT.
+
+## CLI: `bm`
+
+A companion CLI tool for managing bookmarks from the terminal.
+
+```text
+bm backup              Create a timestamped backup
+bm export csv|json     Export to CSV, JSON, markdown, or HTML
+bm import <file>       Import from a CSV or JSON file
+bm sync                Sync starred repos from GitHub
+bm status              Show bookmark count and folder sizes
+bm diff                Show changes since the last backup
+bm restore <backup>    Restore from a specific backup
+bm list <folder>       List bookmarks in a folder
+```
+
+Install:
+
+```text
+# Symlink to PATH
+ln -sf $(pwd)/bm /usr/local/bin/bm
+
+# Or use directly
+./bm status
+```

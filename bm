@@ -1,0 +1,620 @@
+#!/usr/bin/env python3
+"""bm — Chrome bookmarks CLI: backup, sync, import, export.
+
+Usage:
+  bm backup              Create a timestamped backup of AccountBookmarks
+  bm export <format>     Export bookmarks to csv|json|markdown|html
+  bm import <file>       Import bookmarks from a file (csv|json|chrome)
+  bm sync                Pull latest starred repos from GitHub into bookmarks
+  bm status              Show bookmark count, file size, last backup
+  bm diff                Show changes since last backup
+  bm restore <backup>    Restore from a backup file
+  bm list <folder>       List bookmarks in a folder (default: all top-level)
+"""
+
+import argparse
+import csv
+import hashlib
+import json
+import os
+import shutil
+import subprocess
+import sys
+import uuid
+import random
+from datetime import datetime
+from pathlib import Path
+from collections import defaultdict
+from urllib.parse import urlparse
+
+# ── Paths ──────────────────────────────────────────────────────────────
+
+CHROME_DIR = Path.home() / "Library/Application Support/Google/Chrome/Default"
+BOOKMARKS_FILE = CHROME_DIR / "AccountBookmarks"
+REPO_DIR = Path(__file__).resolve().parent
+BACKUP_DIR = REPO_DIR / "backups"
+STARRED_CACHE = REPO_DIR / ".starred_cache.txt"
+
+# ── Helpers ────────────────────────────────────────────────────────────
+
+def _read_bookmarks(path=None):
+    path = path or BOOKMARKS_FILE
+    with open(path) as f:
+        return json.load(f)
+
+
+def _write_bookmarks(data, path=None):
+    path = path or BOOKMARKS_FILE
+    raw = json.dumps(data, indent=3, ensure_ascii=False)
+    data["checksum"] = hashlib.md5(raw.encode()).hexdigest()
+    with open(path, "w") as f:
+        json.dump(data, f, indent=3, ensure_ascii=False)
+
+
+def _find_folder(node, name):
+    """Recursively find a folder by name in the bookmark tree."""
+    if "children" in node:
+        for c in node["children"]:
+            if c.get("name") == name and c.get("type") == "folder":
+                return c
+            if c.get("type") == "folder":
+                r = _find_folder(c, name)
+                if r:
+                    return r
+    return None
+
+
+def _create_folder(parent, name):
+    """Create a folder inside parent if it doesn't exist."""
+    existing = _find_folder(parent, name)
+    if existing:
+        return existing
+    folder = {
+        "date_added": str(13361000000000000 + random.randint(0, 99999999999999)),
+        "guid": str(uuid.uuid4()),
+        "id": random.randint(100000, 999999),
+        "name": name,
+        "type": "folder",
+        "children": [],
+    }
+    if "children" in parent:
+        parent["children"].append(folder)
+    else:
+        parent["children"] = [folder]
+    return folder
+
+
+def _count_bookmarks(node):
+    """Count total URL items under a node."""
+    total = 0
+    if "children" in node:
+        for c in node["children"]:
+            if c.get("type") == "url":
+                total += 1
+            elif c.get("type") == "folder":
+                total += _count_bookmarks(c)
+    return total
+
+
+def _folders_tree(node, prefix="", level=0):
+    """Return a list of strings representing the folder tree."""
+    lines = []
+    if "children" in node:
+        for i, c in enumerate(node["children"]):
+            is_last = i == len(node["children"]) - 1
+            if c.get("type") == "folder":
+                connector = "└─" if is_last else "├─"
+                sub = c.get("name", "?")
+                count = _count_bookmarks(c)
+                lines.append(f"{prefix}{connector}📁 {sub} ({count})")
+                sub_prefix = prefix + ("    " if is_last else "│   ")
+                lines.extend(_folders_tree(c, sub_prefix, level + 1))
+    return lines
+
+
+def _ensure_chrome_closed():
+    """Ensure Chrome is not running so bookmarks file is writable."""
+    result = subprocess.run(
+        ["pgrep", "-x", "Google Chrome"], capture_output=True, text=True
+    )
+    if result.returncode == 0:
+        print("⚠️  Chrome is running — shutting down...")
+        subprocess.run(["killall", "Google Chrome"], capture_output=True)
+        import time
+        time.sleep(2)
+
+
+def _open_chrome():
+    subprocess.Popen(["open", "-a", "Google Chrome"])
+
+
+def _get_gh_token():
+    result = subprocess.run(
+        ["gh", "auth", "token"], capture_output=True, text=True, timeout=10
+    )
+    if result.returncode != 0 or not result.stdout.strip():
+        print("❌ GitHub CLI (gh) not authenticated. Run `gh auth login` first.")
+        sys.exit(1)
+    return result.stdout.strip()
+
+
+# ── Commands ───────────────────────────────────────────────────────────
+
+def cmd_backup():
+    """Create a timestamped backup of AccountBookmarks."""
+    _ensure_chrome_closed()
+    BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    dst = BACKUP_DIR / f"bookmarks_{ts}.json"
+
+    if BOOKMARKS_FILE.exists():
+        shutil.copy2(BOOKMARKS_FILE, dst)
+        size = dst.stat().st_size
+        print(f"✅ Backup created: {dst.name} ({size / 1024:.0f} KB)")
+
+        # Keep last 20 backups, remove oldest
+        backups = sorted(BACKUP_DIR.glob("bookmarks_*.json"))
+        while len(backups) > 20:
+            backups[0].unlink()
+            print(f"   Removed old backup: {backups[0].name}")
+            backups = sorted(BACKUP_DIR.glob("bookmarks_*.json"))
+    else:
+        print(f"❌ Bookmarks file not found at {BOOKMARKS_FILE}")
+
+
+def cmd_export(fmt):
+    """Export bookmarks to the specified format."""
+    if not BOOKMARKS_FILE.exists():
+        print(f"❌ Bookmarks file not found at {BOOKMARKS_FILE}")
+        sys.exit(1)
+
+    data = _read_bookmarks()
+    bb = data.get("roots", {}).get("bookmark_bar", {})
+    if not bb:
+        print("❌ No bookmark_bar found in bookmarks file")
+        sys.exit(1)
+
+    fmt = fmt.lower()
+
+    if fmt == "json":
+        out = REPO_DIR / "bookmarks_export.json"
+        _write_bookmarks(data, out)
+        print(f"✅ Exported to {out} ({out.stat().st_size / 1024:.0f} KB)")
+
+    elif fmt == "csv":
+        rows = []
+
+        def _flatten(node, folder_path=""):
+            if "children" in node:
+                for c in node["children"]:
+                    full_path = f"{folder_path}/{c['name']}" if folder_path else c.get("name", "")
+                    if c.get("type") == "url":
+                        rows.append([full_path, c.get("name", ""), c.get("url", "")])
+                    elif c.get("type") == "folder":
+                        _flatten(c, full_path)
+
+        _flatten(bb)
+        out = REPO_DIR / "bookmarks_export.csv"
+        with open(out, "w", newline="") as f:
+            w = csv.writer(f)
+            w.writerow(["folder", "name", "url"])
+            w.writerows(rows)
+        print(f"✅ Exported {len(rows)} bookmarks to {out}")
+
+    elif fmt == "markdown":
+        lines = ["# Bookmark Export", "", f"Date: {datetime.now().isoformat()[:19]}", ""]
+        lines.extend(_folders_tree(bb))
+        out = REPO_DIR / "bookmarks_export.md"
+        with open(out, "w") as f:
+            f.write("\n".join(lines))
+        print(f"✅ Exported to {out}")
+
+    elif fmt == "html":
+        html_parts = [
+            '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">',
+            f"<title>Bookmarks Export — {datetime.now().strftime('%Y-%m-%d')}</title>",
+            '<style>body{font-family:-apple-system,sans-serif;max-width:800px;margin:0 auto;padding:20px}',
+            'ul{list-style:none;padding-left:20px}li{margin:2px 0}',
+            'a{color:#1a73e8;text-decoration:none}a:hover{text-decoration:underline}',
+            '.folder{font-weight:600;margin-top:8px}.count{color:#888;font-size:12px}</style></head><body>',
+            f"<h1>Bookmarks ({_count_bookmarks(bb)})</h1>",
+        ]
+
+        def _html(node):
+            parts = []
+            if "children" in node:
+                parts.append("<ul>")
+                for c in node["children"]:
+                    if c.get("type") == "url":
+                        href = c.get("url", "").replace('&', '&amp;').replace('<', '&lt;')
+                        n = c.get("name", "").replace('&', '&amp;').replace('<', '&lt;')
+                        parts.append(f'<li><a href="{href}">{n}</a></li>')
+                    elif c.get("type") == "folder":
+                        n = c.get("name", "")
+                        count = _count_bookmarks(c)
+                        parts.append(f'<li class="folder">📁 {n} <span class="count">({count})</span>')
+                        parts.extend(_html(c))
+                        parts.append("</li>")
+                parts.append("</ul>")
+            return parts
+
+        html_parts.extend(_html(bb))
+        html_parts.append("</body></html>")
+
+        out = REPO_DIR / "bookmarks_export.html"
+        with open(out, "w") as f:
+            f.write("\n".join(html_parts))
+        print(f"✅ Exported to {out}")
+
+    else:
+        print(f"❌ Unknown format: {fmt}. Use: csv, json, markdown, html")
+
+
+def cmd_import(filepath):
+    """Import bookmarks from a file into Chrome."""
+    src = Path(filepath)
+    if not src.exists():
+        print(f"❌ File not found: {filepath}")
+        sys.exit(1)
+
+    _ensure_chrome_closed()
+
+    ext = src.suffix.lower()
+    if ext == ".json":
+        # Chrome format JSON
+        try:
+            with open(src) as f:
+                imported = json.load(f)
+            if "roots" in imported:
+                # Full Chrome bookmarks file
+                _write_bookmarks(imported)
+                total = _count_bookmarks(imported.get("roots", {}).get("bookmark_bar", {}))
+                print(f"✅ Imported {total} bookmarks from Chrome JSON")
+            elif isinstance(imported, list):
+                # List of bookmark objects
+                data = _read_bookmarks()
+                bb = data.get("roots", {}).get("bookmark_bar", {})
+                added = 0
+                for item in imported:
+                    if "url" in item and "name" in item:
+                        _create_folder(bb, item.get("folder", "Imported"))
+                        target = _find_folder(bb, item.get("folder", "Imported"))
+                        target["children"].append({
+                            "date_added": str(13361000000000000 + random.randint(0, 99999999999999)),
+                            "guid": str(uuid.uuid4()),
+                            "id": random.randint(100000, 999999),
+                            "name": item["name"][:100],
+                            "type": "url",
+                            "url": item["url"],
+                        })
+                        added += 1
+                _write_bookmarks(data)
+                print(f"✅ Imported {added} bookmarks from JSON list")
+            else:
+                print("❌ Unknown JSON format")
+        except json.JSONDecodeError:
+            print("❌ Invalid JSON file")
+
+    elif ext == ".csv":
+        data = _read_bookmarks()
+        bb = data.get("roots", {}).get("bookmark_bar", {})
+        added = 0
+        with open(src, newline="") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                folder_name = row.get("folder", "Imported").split("/")[-1]
+                bm_name = row.get("name", "").strip()
+                bm_url = row.get("url", "").strip()
+                if bm_url and bm_name:
+                    _create_folder(bb, folder_name)
+                    target = _find_folder(bb, folder_name)
+                    target["children"].append({
+                        "date_added": str(13361000000000000 + random.randint(0, 99999999999999)),
+                        "guid": str(uuid.uuid4()),
+                        "id": random.randint(100000, 999999),
+                        "name": bm_name[:100],
+                        "type": "url",
+                        "url": bm_url,
+                    })
+                    added += 1
+        _write_bookmarks(data)
+        print(f"✅ Imported {added} bookmarks from CSV")
+
+    else:
+        print(f"❌ Unsupported file format: {ext}. Use .json or .csv")
+
+    _open_chrome()
+
+
+def cmd_sync():
+    """Sync starred GitHub repos into bookmarks."""
+    _ensure_chrome_closed()
+
+    print("📡 Fetching starred repos from GitHub...")
+    # Use file-based storage to avoid pipe issues
+    tmp_file = "/tmp/bm_sync_repos.txt"
+    result = subprocess.run(
+        ["gh", "api", "users/gandli/starred", "--paginate", "--jq",
+         '.[] | "\(.html_url)|\(.full_name)"'],
+        capture_output=True, text=True, timeout=600
+    )
+
+    if result.returncode != 0:
+        print(f"❌ GitHub API failed: {result.stderr.strip()[:200]}")
+        sys.exit(1)
+
+    lines = [l.strip() for l in result.stdout.split("\n") if l.strip() and "|" in l]
+    seen = set()
+    starred = []
+    for l in lines:
+        url = l.split("|")[0]
+        if url not in seen:
+            seen.add(url)
+            starred.append(l)
+
+    # Cache for git
+    with open(STARRED_CACHE, "w") as f:
+        for l in starred:
+            f.write(l + "\n")
+
+    print(f"   Found {len(starred)} starred repos")
+
+    # Read current bookmarks
+    data = _read_bookmarks()
+    bb = data.get("roots", {}).get("bookmark_bar", {})
+    gh_folder = _find_folder(bb, "GitHub")
+
+    if not gh_folder:
+        # Try to find it at top level
+        gh_folder = _create_folder(bb, "GitHub")
+
+    existing_urls = {
+        c["url"]
+        for c in gh_folder.get("children", [])
+        if c.get("type") == "url" and c.get("url")
+    }
+
+    new_count = 0
+    for l in starred:
+        url, name = l.split("|", 1)
+        if url not in existing_urls:
+            gh_folder["children"].append({
+                "date_added": str(13361000000000000 + random.randint(0, 99999999999999)),
+                "guid": str(uuid.uuid4()),
+                "id": random.randint(100000, 999999),
+                "name": name.strip()[:100],
+                "type": "url",
+                "url": url,
+            })
+            existing_urls.add(url)
+            new_count += 1
+
+    total = len(gh_folder.get("children", []))
+    _write_bookmarks(data)
+
+    print(f"   Added {new_count} new repos")
+    print(f"   GitHub folder now: {total} repos")
+
+    # Also update flattened CSV
+    flat = []
+    def _flatten(node, path=""):
+        if "children" in node:
+            for c in node["children"]:
+                new_path = f"{path}/{c['name']}" if path else c.get("name", "")
+                if c.get("type") == "url":
+                    flat.append(f"{new_path}|{c['name']}|{c['url']}")
+                elif c.get("type") == "folder":
+                    _flatten(c, new_path)
+    _flatten(bb)
+
+    with open(REPO_DIR / "bookmarks_flattened.csv", "w", newline="") as f:
+        f.write("folder|name|url\n")
+        for line in flat:
+            f.write(line + "\n")
+
+    with open(REPO_DIR / "SUMMARY.md", "w") as f:
+        f.write("# Browser Bookmarks Backup\n\n")
+        f.write(f"导出时间: {datetime.now().strftime('%Y-%m-%d %H:%M')}\n")
+        f.write(f"来源: Chrome + GitHub Sync\n")
+        f.write(f"总数: {_count_bookmarks(bb)} 书签\n\n## 书签结构\n\n")
+        for line in _folders_tree(bb):
+            f.write(line + "\n")
+
+    _open_chrome()
+    print(f"✅ Sync complete. Total bookmarks: {_count_bookmarks(bb)}")
+
+
+def cmd_status():
+    """Show bookmark stats."""
+    if not BOOKMARKS_FILE.exists():
+        print("❌ Bookmarks file not found")
+        sys.exit(1)
+
+    data = _read_bookmarks()
+    bb = data.get("roots", {}).get("bookmark_bar", {})
+    total = _count_bookmarks(bb)
+    size = BOOKMARKS_FILE.stat().st_size
+    backup_count = len(list(BACKUP_DIR.glob("bookmarks_*.json")))
+
+    print(f"📊 Bookmark Status")
+    print(f"   File: {BOOKMARKS_FILE}")
+    print(f"   Size: {size / 1024:.0f} KB")
+    print(f"   Total: {total} bookmarks")
+    print(f"   Backups: {backup_count} available")
+
+    print(f"\n📁 Folders:")
+    if "children" in bb:
+        for c in bb["children"]:
+            if c.get("type") == "folder":
+                cnt = _count_bookmarks(c)
+                print(f"   📁 {c['name']}: {cnt}")
+
+    # Show last backup
+    backups = sorted(BACKUP_DIR.glob("bookmarks_*.json"))
+    if backups:
+        last = backups[-1]
+        mtime = datetime.fromtimestamp(last.stat().st_mtime)
+        print(f"\n   Last backup: {last.name} ({mtime.strftime('%Y-%m-%d %H:%M')})")
+
+
+def cmd_diff():
+    """Show differences between current bookmarks and last backup."""
+    backups = sorted(BACKUP_DIR.glob("bookmarks_*.json"))
+    if not backups:
+        print("❌ No backups found. Run `bm backup` first.")
+        return
+
+    last = backups[-1]
+    current = _read_bookmarks()
+    previous = _read_bookmarks(last)
+
+    def _get_counts(node):
+        """Return dict: path -> count of bookmarks."""
+        counts = {}
+
+        def _walk(n, path=""):
+            if "children" in n:
+                for c in n["children"]:
+                    name = c.get("name", "")
+                    full = f"{path}/{name}" if path else name
+                    if c.get("type") == "folder":
+                        cnt = _count_bookmarks(c)
+                        counts[full] = cnt
+                        _walk(c, full)
+                    elif c.get("type") == "url":
+                        counts.setdefault(f"{path}/_urls", 0)
+                        counts[f"{path}/_urls"] += 1
+
+        _walk(node)
+        return counts
+
+    cur_c = _get_counts(current.get("roots", {}).get("bookmark_bar", {}))
+    prev_c = _get_counts(previous.get("roots", {}).get("bookmark_bar", {}))
+
+    total_cur = sum(v for k, v in cur_c.items() if k.endswith("/_urls") or not k.endswith("/_urls"))
+    total_prev = sum(v for k, v in prev_c.items() if k.endswith("/_urls") or not k.endswith("/_urls"))
+
+    print(f"📊 Diff: Current vs {last.name}")
+    print(f"   Previous: ~{total_prev} bookmarks")
+    print(f"   Current:  ~{total_cur} bookmarks")
+
+    all_keys = set(list(cur_c.keys()) + list(prev_c.keys()))
+    for key in sorted(all_keys):
+        if key.endswith("/_urls"):
+            continue
+        prev_val = prev_c.get(key, 0)
+        cur_val = cur_c.get(key, 0)
+        if prev_val != cur_val:
+            delta = cur_val - prev_val
+            sign = "+" if delta > 0 else ""
+            print(f"   {key}: {prev_val} → {cur_val} ({sign}{delta})")
+
+
+def cmd_restore(backup_name):
+    """Restore bookmarks from a backup."""
+    if backup_name:
+        backup_path = BACKUP_DIR / backup_name
+        if not backup_path.exists():
+            print(f"❌ Backup not found: {backup_name}")
+            print(f"   Available: {', '.join(b.name for b in sorted(BACKUP_DIR.glob('bookmarks_*.json')))}")
+            sys.exit(1)
+    else:
+        backups = sorted(BACKUP_DIR.glob("bookmarks_*.json"))
+        if not backups:
+            print("❌ No backups available")
+            sys.exit(1)
+        backup_path = backups[-1]
+        print(f"   Using latest backup: {backup_path.name}")
+
+    _ensure_chrome_closed()
+    shutil.copy2(backup_path, BOOKMARKS_FILE)
+    data = _read_bookmarks()
+    total = _count_bookmarks(data.get("roots", {}).get("bookmark_bar", {}))
+    print(f"✅ Restored {total} bookmarks from {backup_path.name}")
+    _open_chrome()
+
+
+def cmd_list(folder_name):
+    """List bookmarks in a folder."""
+    if not BOOKMARKS_FILE.exists():
+        print("❌ Bookmarks file not found")
+        sys.exit(1)
+
+    data = _read_bookmarks()
+    bb = data.get("roots", {}).get("bookmark_bar", {})
+
+    if folder_name:
+        target = _find_folder(bb, folder_name)
+        if not target:
+            print(f"❌ Folder not found: {folder_name}")
+            print(f"   Available: {', '.join(c['name'] for c in bb.get('children', []) if c.get('type') == 'folder')}")
+            sys.exit(1)
+        items = target.get("children", [])
+        urls = [c for c in items if c.get("type") == "url"]
+        subs = [c for c in items if c.get("type") == "folder"]
+
+        print(f"📁 {folder_name} ({_count_bookmarks(target)} total)")
+        for s in subs:
+            print(f"   📁 {s['name']}: {_count_bookmarks(s)}")
+        for u in urls:
+            print(f"   🔗 {u.get('name', '?')} → {u.get('url', '?')}")
+    else:
+        # List top-level folders
+        print(f"📂 Top-Level Folders ({_count_bookmarks(bb)} total)")
+        for c in bb.get("children", []):
+            if c.get("type") == "folder":
+                cnt = _count_bookmarks(c)
+                print(f"   📁 {c['name']}: {cnt}")
+        print("\n   Tip: `bm list <folder>` to see contents")
+
+
+def cmd_export_accountbookmarks():
+    """Copy AccountBookmarks to repo for git tracking."""
+    _ensure_chrome_closed()
+    if BOOKMARKS_FILE.exists():
+        shutil.copy2(BOOKMARKS_FILE, REPO_DIR / "AccountBookmarks")
+        data = _read_bookmarks(REPO_DIR / "AccountBookmarks")
+        total = _count_bookmarks(data.get("roots", {}).get("bookmark_bar", {}))
+        size = (REPO_DIR / "AccountBookmarks").stat().st_size
+        print(f"✅ Copied {BOOKMARKS_FILE.name} to repo ({total} items, {size / 1024:.0f} KB)")
+    else:
+        print(f"❌ File not found: {BOOKMARKS_FILE}")
+        sys.exit(1)
+
+
+# ── Main ───────────────────────────────────────────────────────────────
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="bm — Chrome bookmarks CLI: backup, sync, import, export",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=__doc__,
+    )
+    parser.add_argument("command", nargs="?", default="status", help="Command to run")
+    parser.add_argument("arg", nargs="?", default=None, help="Argument (format, file, folder, backup name)")
+    args = parser.parse_args()
+
+    commands = {
+        "backup": lambda: cmd_backup(),
+        "export": lambda: cmd_export(args.arg or "csv"),
+        "import": lambda: cmd_import(args.arg),
+        "sync": lambda: cmd_sync(),
+        "status": lambda: cmd_status(),
+        "diff": lambda: cmd_diff(),
+        "restore": lambda: cmd_restore(args.arg),
+        "list": lambda: cmd_list(args.arg),
+        "cp": lambda: cmd_export_accountbookmarks(),
+    }
+
+    cmd_fn = commands.get(args.command)
+    if not cmd_fn:
+        print(f"❌ Unknown command: {args.command}")
+        print(__doc__)
+        sys.exit(1)
+
+    cmd_fn()
+
+
+if __name__ == "__main__":
+    main()
