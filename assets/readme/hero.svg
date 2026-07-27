@@ -1,0 +1,77 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 520" width="100%" height="auto">
+  <title>gandli/bookmarks — browser bookmarks backup</title>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#0d1117"/>
+      <stop offset="100%" stop-color="#161b22"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#58a6ff"/>
+      <stop offset="100%" stop-color="#3fb950"/>
+    </linearGradient>
+  </defs>
+  
+  <!-- Background -->
+  <rect width="1200" height="520" fill="url(#bg)" rx="12"/>
+  
+  <!-- Subtle grid -->
+  <g opacity="0.04" stroke="#ffffff">
+    <line x1="0" y1="100" x2="1200" y2="100" stroke-width="1"/>
+    <line x1="0" y1="200" x2="1200" y2="200" stroke-width="1"/>
+    <line x1="0" y1="300" x2="1200" y2="300" stroke-width="1"/>
+    <line x1="0" y1="400" x2="1200" y2="400" stroke-width="1"/>
+    <line x1="200" y1="0" x2="200" y2="520" stroke-width="1"/>
+    <line x1="600" y1="0" x2="600" y2="520" stroke-width="1"/>
+    <line x1="1000" y1="0" x2="1000" y2="520" stroke-width="1"/>
+  </g>
+
+  <!-- Title area -->
+  <text x="42" y="58" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="14" fill="#8b949e" letter-spacing="1.5">CHROME BOOKMARKS BACKUP</text>
+  
+  <text x="42" y="104" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="44" font-weight="800" fill="#e6edf3" letter-spacing="-1">
+    bookmarks
+    <tspan fill="#58a6ff" font-weight="400" font-size="28" dx="12" dy="-4">v2026-07-27</tspan>
+  </text>
+  
+  <text x="42" y="140" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="18" fill="#8b949e">
+    Version-controlled browser bookmarks · 5,956 items · 57 folders
+  </text>
+
+  <!-- Stats row -->
+  <g transform="translate(42, 190)">
+    <rect x="0" y="0" width="260" height="80" rx="8" fill="#1c2333" stroke="#30363d" stroke-width="1"/>
+    <text x="16" y="28" font-family="'SF Mono', 'Fira Code', 'JetBrains Mono', 'Cascadia Code', monospace" font-size="28" font-weight="700" fill="#58a6ff">5,956</text>
+    <text x="16" y="50" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" fill="#8b949e">Total Bookmarks</text>
+    <line x1="0" y1="60" x2="260" y2="60" stroke="#30363d" stroke-width="1" opacity="0.5"/>
+
+    <rect x="280" y="0" width="260" height="80" rx="8" fill="#1c2333" stroke="#30363d" stroke-width="1"/>
+    <text x="296" y="28" font-family="'SF Mono', 'Fira Code', 'JetBrains Mono', 'Cascadia Code', monospace" font-size="28" font-weight="700" fill="#3fb950">57</text>
+    <text x="296" y="50" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" fill="#8b949e">Folders</text>
+    <line x1="280" y1="60" x2="540" y2="60" stroke="#30363d" stroke-width="1" opacity="0.5"/>
+
+    <rect x="560" y="0" width="260" height="80" rx="8" fill="#1c2333" stroke="#30363d" stroke-width="1"/>
+    <text x="576" y="28" font-family="'SF Mono', 'Fira Code', 'JetBrains Mono', 'Cascadia Code', monospace" font-size="28" font-weight="700" fill="#d29922">8</text>
+    <text x="576" y="50" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" fill="#8b949e">Categories</text>
+    <line x1="560" y1="60" x2="820" y2="60" stroke="#30363d" stroke-width="1" opacity="0.5"/>
+  </g>
+
+  <!-- File tree motif -->
+  <g transform="translate(42, 310)" font-family="'SF Mono', 'Fira Code', 'JetBrains Mono', 'Cascadia Code', monospace" font-size="13">
+    <text x="0" y="0" fill="#58a6ff" font-weight="600">📦 bookmarks</text>
+    <text x="24" y="24" fill="#8b949e">├─📁 日常</text>
+    <text x="48" y="42" fill="#484f58">│  ├ 社交 12  📁 邮箱 4  📁 购物 14  📁 地图 16</text>
+    <text x="48" y="60" fill="#484f58">│  ├ 影音 9  📁 音乐 6  📁 云盘 4  📁 内网VPN 8</text>
+    <text x="24" y="84" fill="#8b949e">├─📁 AI</text>
+    <text x="48" y="102" fill="#484f58">│  └ AI对话 111  📁 AI编程 4  📁 AI绘画 2</text>
+    <text x="24" y="126" fill="#8b949e">├─📁 CTF</text>
+    <text x="48" y="144" fill="#484f58">│  ├ 平台13  📁 编码25  📁 渗透43  📁 工具21</text>
+    <text x="24" y="168" fill="#8b949e">├─📁 开发</text>
+    <text x="48" y="186" fill="#3fb950" font-weight="600">│  └ GitHub 5,080  📁 前端33  📁 后端2  📁 ...</text>
+  </g>
+
+  <!-- Decorative line at bottom -->
+  <line x1="42" y1="482" x2="1158" y2="482" stroke="#30363d" stroke-width="1"/>
+  <text x="42" y="504" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11" fill="#484f58">
+    Chrome AccountBookmarks · Managed by gandli/bookmarks · 2026-07-27
+  </text>
+</svg>
